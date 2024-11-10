@@ -65,7 +65,38 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if !opts.user_events {
-        println!("{rd:#?}");
+        println!("Protocol: {}", rd.protocol);
+        println!("Header");
+        println!("  - Endianness: {}", rd.header.endianness);
+        println!("  - Format version: {}", rd.header.format_version);
+        println!("  - Kernel version: {}", rd.header.kernel_version);
+        println!("  - Kernel port: {}", rd.header.kernel_port);
+        println!("  - Options: 0x{:X}", rd.header.options);
+        println!("  - IRQ priority order: {}", rd.header.irq_priority_order);
+        println!("  - Cores: {}", rd.header.num_cores);
+        println!(
+            "  - ISR tail chaining threshold: {}",
+            rd.header.isr_tail_chaining_threshold
+        );
+        println!("  - Platform config: {}", rd.header.platform_cfg);
+        println!(
+            "  - Platform config version: {}",
+            rd.header.platform_cfg_version
+        );
+        println!("Timestamp Info");
+        println!("  - Timer type: {}", rd.timestamp_info.timer_type);
+        println!("  - Timer frequency: {}", rd.timestamp_info.timer_frequency);
+        println!("  - Timer period: {}", rd.timestamp_info.timer_period);
+        println!(
+            "  - Timer wraparounds: {}",
+            rd.timestamp_info.timer_wraparounds
+        );
+        println!("  - OS tick rate Hz: {}", rd.timestamp_info.os_tick_rate_hz);
+        println!(
+            "  - Latest timestamp: {}",
+            rd.timestamp_info.latest_timestamp
+        );
+        println!("  - OS tick count: {}", rd.timestamp_info.os_tick_count);
     }
 
     let mut observed_type_counters = BTreeMap::new();
