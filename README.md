@@ -4,11 +4,13 @@ Print Percepio TraceRecorder streaming data from file
 
 ## Install
 
-```bash
-git clone https://github.com/jonlamb-gh/trace-recorder-printer.git
-cd trace-recorder-printer
-cargo install --path .
-```
+* Download one of the pre-built [releases](https://github.com/jonlamb-gh/trace-recorder-printer/releases)
+* Or build/install from source:
+  ```bash
+  git clone https://github.com/jonlamb-gh/trace-recorder-printer.git
+  cd trace-recorder-printer
+  cargo install --path .
+  ```
 
 ## CLI
 
