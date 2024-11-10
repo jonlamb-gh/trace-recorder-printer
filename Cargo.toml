@@ -22,3 +22,17 @@ trace-recorder-parser = "0.19"
 # See:
 #   https://github.com/rust-lang/rust/issues/46016#issuecomment-605624865
 nix = { version = "0.29", features = ["signal"] }
+
+[package.metadata.deb]
+extended-description = """\
+A CLI to Print Percepio TraceRecorder streaming data from file. \
+
+See https://github.com/jonlamb-gh/trace-recorder-printer for \
+more information."""
+depends = "$auto"
+section = "devel"
+priority = "optional"
+assets = [
+    ["target/release/trace-recorder-printer", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/trace-recorder-printer/README", "644"],
+]
