@@ -1,4 +1,5 @@
 use clap::Parser;
+use itertools::Itertools;
 use std::collections::{BTreeMap, HashMap};
 use std::{fs::File, io::BufReader, path::PathBuf, time::Duration};
 use tabular::{Row, Table};
@@ -165,11 +166,12 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let mut table = Table::new("{:>}    {:>}    {:<}");
+    let mut table = Table::new("{:>}    {:>}    {:>}    {:<}");
     table.add_heading("--------------------------------------------------------");
     table.add_row(
         Row::new()
             .with_cell("Handle")
+            .with_cell("Address")
             .with_cell("Class")
             .with_cell("Symbol"),
     );
@@ -189,6 +191,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
         table.add_row(
             Row::new()
                 .with_cell(handle)
+                .with_cell(format!("0x{handle:08X}"))
                 .with_cell(entry_class)
                 .with_cell(entry_sym),
         );
@@ -205,7 +208,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
             .with_cell("Type"),
     );
     table.add_heading("--------------------------------------------------------");
-    for (t, count) in observed_type_counters.into_iter() {
+    for (t, count) in observed_type_counters.into_iter().sorted_by_key(|t| t.1) {
         let percentage = 100.0 * (count as f64 / total_count as f64);
         table.add_row(
             Row::new()
@@ -235,7 +238,10 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     table.add_heading(
         "----------------------------------------------------------------------------------------------",
     );
-    for (ctx, stats) in context_stats.into_iter() {
+    for (ctx, stats) in context_stats
+        .into_iter()
+        .sorted_by_key(|t| t.1.total_runtime.get_raw())
+    {
         let handle = ctx.object_handle();
         let sym = rd
             .entry_table
@@ -280,7 +286,8 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
         let total_time_ns =
             (ticks_ns / u128::from(rd.timestamp_info.timer_frequency.get_raw())) as u64;
         let total_dur = Duration::from_nanos(total_time_ns);
-        println!("Total time: {}ns ({:?})", total_time_ns, total_dur);
+        println!("Total time (ns): {}", total_time_ns);
+        println!("Total time: {:?}", total_dur);
     }
 
     Ok(())
