@@ -1,13 +1,14 @@
 use clap::Parser;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::{fs::File, io::BufReader, path::PathBuf, time::Duration};
 use tabular::{Row, Table};
 use trace_recorder_parser::{
     streaming::{
-        event::{Event, EventId, TrackingEventCounter},
+        event::{Event, EventId, IsrEvent, TaskEvent, TrackingEventCounter},
         Error, RecorderData,
     },
-    time::StreamingInstant,
+    time::{StreamingInstant, Timestamp},
+    types::ObjectHandle,
 };
 use tracing::{error, warn};
 
@@ -66,16 +67,14 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{rd:#?}");
     }
 
-    if opts.no_events {
-        return Ok(());
-    }
-
     let mut observed_type_counters = BTreeMap::new();
     let mut total_count = 0_u64;
     let mut event_counter_tracker = TrackingEventCounter::zero();
     let mut first_event_observed = false;
     let mut total_dropped_events = 0_u64;
     let mut time_tracker = StreamingInstant::zero();
+    let mut context_stats: HashMap<ContextHandle, ContextStats> = Default::default();
+    let mut active_context = ContextHandle::Task(ObjectHandle::NO_TASK);
 
     loop {
         let (event_code, event) = match rd.read_event(&mut r) {
@@ -89,6 +88,8 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(custom_printf_event_id) = opts.custom_printf_event_id {
                         rd.set_custom_printf_event_id(custom_printf_event_id.into());
                     }
+                    // TODO - probably can do better and maintain these stats
+                    context_stats.clear();
                     continue;
                 }
                 _ => {
@@ -110,10 +111,10 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
             event_counter_tracker.update(event.event_count())
         };
 
-        let _abs_timestamp = time_tracker.elapsed(event.timestamp());
+        let timestamp = time_tracker.elapsed(event.timestamp());
 
         let event_type = event_code.event_type();
-        if !opts.user_events {
+        if !opts.no_events {
             println!("{event_type} : {event} : {}", event.event_count());
         }
         if opts.user_events {
@@ -131,6 +132,32 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
                 dropped_events, "Dropped events detected"
             );
             total_dropped_events += dropped_events;
+        }
+
+        // Update active context and stats
+        let maybe_contex_switch_handle: Option<ContextHandle> = match &event {
+            Event::IsrBegin(ev) | Event::IsrResume(ev) => Some(ev.into()),
+            Event::TaskBegin(ev) | Event::TaskResume(ev) | Event::TaskActivate(ev) => {
+                Some(ev.into())
+            }
+            _ => None,
+        };
+
+        if let Some(contex_switch_handle) = maybe_contex_switch_handle {
+            if contex_switch_handle != active_context {
+                // Update runtime stats for the previous context being switched out
+                if let Some(prev_ctx_stats) = context_stats.get_mut(&active_context) {
+                    prev_ctx_stats.update(timestamp);
+                }
+
+                // Same for the new context being switched in
+                let ctx_stats = context_stats
+                    .entry(contex_switch_handle)
+                    .or_insert_with(|| ContextStats::new(timestamp));
+                ctx_stats.set_last_timestamp(timestamp);
+
+                active_context = contex_switch_handle;
+            }
         }
     }
 
@@ -190,13 +217,65 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     }
     print!("{table}");
 
+    let mut table = Table::new("{:>}   {:>}   {:<}   {:>}   {:>}   {:>}   {:>}   {:>}");
+    table.add_heading(
+        "----------------------------------------------------------------------------------------------",
+    );
+    table.add_row(
+        Row::new()
+            .with_cell("Handle")
+            .with_cell("Symbol")
+            .with_cell("Type")
+            .with_cell("Count")
+            .with_cell("Ticks")
+            .with_cell("Nanos")
+            .with_cell("Duration")
+            .with_cell("%"),
+    );
+    table.add_heading(
+        "----------------------------------------------------------------------------------------------",
+    );
+    for (ctx, stats) in context_stats.into_iter() {
+        let handle = ctx.object_handle();
+        let sym = rd
+            .entry_table
+            .symbol(handle)
+            .map(|s| s.as_ref())
+            .unwrap_or("");
+        let typ = match ctx {
+            ContextHandle::Task(_) => "Task",
+            ContextHandle::Isr(_) => "ISR",
+        };
+        let total_ns = if !rd.timestamp_info.timer_frequency.is_unitless() {
+            let ticks_ns = u128::from(stats.total_runtime.get_raw()) * u128::from(ONE_SECOND);
+            (ticks_ns / u128::from(rd.timestamp_info.timer_frequency.get_raw())) as u64
+        } else {
+            0
+        };
+        let total_dur = Duration::from_nanos(total_ns);
+        let percentage = 100.0
+            * ((stats.total_runtime.get_raw() as f64)
+                / (time_tracker.to_timestamp().get_raw() as f64));
+        table.add_row(
+            Row::new()
+                .with_cell(handle)
+                .with_cell(sym)
+                .with_cell(typ)
+                .with_cell(stats.count)
+                .with_cell(stats.total_runtime.ticks())
+                .with_cell(total_ns)
+                .with_cell(format!("{total_dur:?}"))
+                .with_cell(format!("{percentage:.01}")),
+        );
+    }
+    print!("{table}");
+
     let total_time_ticks = time_tracker.to_timestamp();
-    println!("--------------------------------------------------------");
+    println!("----------------------------------------------------------------------------------------------");
     println!("Total events: {total_count}");
     println!("Dropped events: {total_dropped_events}");
     println!("Total time (ticks): {}", total_time_ticks);
     if !rd.timestamp_info.timer_frequency.is_unitless() {
-        const ONE_SECOND: u64 = 1_000_000_000;
         let ticks_ns = u128::from(total_time_ticks.get_raw()) * u128::from(ONE_SECOND);
         let total_time_ns =
             (ticks_ns / u128::from(rd.timestamp_info.timer_frequency.get_raw())) as u64;
@@ -206,6 +285,9 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+// ns
+const ONE_SECOND: u64 = 1_000_000_000;
 
 // Used to prevent panics on broken pipes.
 // See:
@@ -221,4 +303,72 @@ fn reset_signal_pipe_handler() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+type DurationTicks = Timestamp;
+
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+struct ContextStats {
+    /// When the context was last switched in
+    last_timestamp: Timestamp,
+
+    /// Total time the context has been in the running state
+    total_runtime: DurationTicks,
+
+    /// Number of times the context was switched in
+    count: u64,
+}
+
+impl ContextStats {
+    fn new(last_timestamp: Timestamp) -> Self {
+        Self {
+            last_timestamp,
+            total_runtime: DurationTicks::zero(),
+            count: 0,
+        }
+    }
+
+    /// Called when this context is switched in
+    fn set_last_timestamp(&mut self, last_timestamp: Timestamp) {
+        self.last_timestamp = last_timestamp;
+        self.count += 1;
+    }
+
+    /// Called when this context is switched out
+    fn update(&mut self, timestamp: Timestamp) {
+        if timestamp < self.last_timestamp {
+            warn!("Stats timestamp went backwards");
+        } else {
+            let diff = timestamp - self.last_timestamp;
+            self.total_runtime += diff;
+            self.last_timestamp = timestamp;
+        }
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+enum ContextHandle {
+    Task(ObjectHandle),
+    Isr(ObjectHandle),
+}
+
+impl ContextHandle {
+    fn object_handle(self) -> ObjectHandle {
+        match self {
+            ContextHandle::Task(h) => h,
+            ContextHandle::Isr(h) => h,
+        }
+    }
+}
+
+impl From<&TaskEvent> for ContextHandle {
+    fn from(event: &TaskEvent) -> Self {
+        ContextHandle::Task(event.handle)
+    }
+}
+
+impl From<&IsrEvent> for ContextHandle {
+    fn from(event: &IsrEvent) -> Self {
+        ContextHandle::Isr(event.handle)
+    }
 }
