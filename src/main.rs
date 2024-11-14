@@ -146,7 +146,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
         let timestamp = time_tracker.elapsed(event.timestamp());
 
         let event_type = event_code.event_type();
-        if !opts.no_events {
+        if !opts.no_events && !opts.user_events {
             println!("{event_type} : {event} : {}", event.event_count());
         }
         if opts.user_events {
