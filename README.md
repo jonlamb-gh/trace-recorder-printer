@@ -110,6 +110,7 @@ Count       %    ID      Type
 ----------------------------------------------------------------------------------------------
 Total events: 18303
 Dropped events: 0
+Trace resets: 0
 Total time (ticks): 14988758
 Total time: 31226579166ns (31.226579166s)
 ```

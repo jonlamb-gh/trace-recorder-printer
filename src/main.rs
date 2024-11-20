@@ -28,6 +28,10 @@ pub struct Opts {
     #[clap(long, conflicts_with = "no_events")]
     pub user_events: bool,
 
+    /// Only show the raw timestamp ticks on events
+    #[clap(long)]
+    pub raw_timestamps: bool,
+
     /// Path to streaming data file (psf)
     #[clap(value_parser)]
     pub path: PathBuf,
@@ -101,6 +105,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut observed_type_counters = BTreeMap::new();
     let mut total_count = 0_u64;
+    let mut trace_reset_count = 0_u64;
     let mut event_counter_tracker = TrackingEventCounter::zero();
     let mut first_event_observed = false;
     let mut total_dropped_events = 0_u64;
@@ -115,6 +120,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => match e {
                 Error::TraceRestarted(psf_start_word_endianness) => {
                     warn!("Detected a restarted trace stream");
+                    trace_reset_count += 1;
                     first_event_observed = false;
                     rd = RecorderData::read_with_endianness(psf_start_word_endianness, &mut r)?;
                     if let Some(custom_printf_event_id) = opts.custom_printf_event_id {
@@ -144,13 +150,28 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let timestamp = time_tracker.elapsed(event.timestamp());
+        let timestamp_dur =
+            if !opts.raw_timestamps && !rd.timestamp_info.timer_frequency.is_unitless() {
+                let ticks_ns = u128::from(timestamp.get_raw()) * u128::from(ONE_SECOND);
+                let total_time_ns =
+                    (ticks_ns / u128::from(rd.timestamp_info.timer_frequency.get_raw())) as u64;
+                Some(Duration::from_nanos(total_time_ns))
+            } else {
+                None
+            };
 
         let event_type = event_code.event_type();
         if !opts.no_events && !opts.user_events {
+            if let Some(dur) = timestamp_dur {
+                print!("[{}.{:03}] ", dur.as_secs(), dur.subsec_millis());
+            }
             println!("{event_type} : {event} : {}", event.event_count());
         }
         if opts.user_events {
             if let Event::User(user_event) = &event {
+                if let Some(dur) = timestamp_dur {
+                    print!("[{}.{:03}] ", dur.as_secs(), dur.subsec_millis());
+                }
                 println!("{user_event}");
             }
         }
@@ -311,6 +332,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     println!("----------------------------------------------------------------------------------------------");
     println!("Total events: {total_count}");
     println!("Dropped events: {total_dropped_events}");
+    println!("Trace resets: {trace_reset_count}");
     println!("Total time (ticks): {}", total_time_ticks);
     if !rd.timestamp_info.timer_frequency.is_unitless() {
         let ticks_ns = u128::from(total_time_ticks.get_raw()) * u128::from(ONE_SECOND);
