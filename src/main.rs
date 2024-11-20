@@ -1,8 +1,10 @@
 use clap::Parser;
+use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+use comfy_table::presets::UTF8_FULL;
+use comfy_table::*;
 use itertools::Itertools;
 use std::collections::{BTreeMap, HashMap};
 use std::{fs::File, io::BufReader, path::PathBuf, time::Duration};
-use tabular::{Row, Table};
 use trace_recorder_parser::{
     streaming::{
         event::{Event, EventId, IsrEvent, TaskEvent, TrackingEventCounter},
@@ -218,118 +220,135 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     if opts.user_events {
         return Ok(());
     }
+    println!();
 
     session_timestamps.push(time_tracker.to_timestamp());
     let total_time_ticks: Timestamp = session_timestamps.into_iter().sum();
 
-    let mut table = Table::new("{:>}    {:>}    {:>}    {:<}");
-    table.add_heading("--------------------------------------------------------");
-    table.add_row(
-        Row::new()
-            .with_cell("Handle")
-            .with_cell("Address")
-            .with_cell("Class")
-            .with_cell("Symbol"),
-    );
-    table.add_heading("--------------------------------------------------------");
-    for (handle, entry) in rd.entry_table.entries().iter() {
-        let entry_class = if let Some(c) = entry.class {
-            c.to_string()
-        } else {
-            "".to_owned()
-        };
-        let entry_sym = if let Some(s) = &entry.symbol {
-            s.as_ref()
-        } else {
-            ""
-        };
+    let rows: Vec<Vec<Cell>> = rd
+        .entry_table
+        .entries()
+        .iter()
+        .map(|(handle, entry)| {
+            let entry_class = if let Some(c) = entry.class {
+                c.to_string()
+            } else {
+                "".to_owned()
+            };
+            let entry_sym = if let Some(s) = &entry.symbol {
+                s.as_ref()
+            } else {
+                ""
+            };
 
-        table.add_row(
-            Row::new()
-                .with_cell(handle)
-                .with_cell(format!("0x{handle:08X}"))
-                .with_cell(entry_class)
-                .with_cell(entry_sym),
-        );
+            vec![
+                Cell::new(handle),
+                Cell::new(format!("0x{handle:08X}")),
+                Cell::new(entry_class),
+                Cell::new(entry_sym),
+            ]
+        })
+        .collect();
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec!["Handle", "Address", "Class", "Symbol"])
+        .add_rows(rows);
+    for c in table.column_iter_mut() {
+        c.set_cell_alignment(CellAlignment::Right);
     }
-    print!("{table}");
+    table
+        .column_mut(3)
+        .unwrap()
+        .set_cell_alignment(CellAlignment::Left);
+    println!("{table}");
+    println!();
 
-    let mut table = Table::new("{:>}    {:>}    {:<}   {:<}");
-    table.add_heading("--------------------------------------------------------");
-    table.add_row(
-        Row::new()
-            .with_cell("Count")
-            .with_cell("%")
-            .with_cell("ID")
-            .with_cell("Type"),
-    );
-    table.add_heading("--------------------------------------------------------");
-    for (t, count) in observed_type_counters.into_iter().sorted_by_key(|t| t.1) {
-        let percentage = 100.0 * (count as f64 / total_count as f64);
-        table.add_row(
-            Row::new()
-                .with_cell(count)
-                .with_cell(format!("{percentage:.01}"))
-                .with_cell(format!("0x{:03X}", EventId::from(t)))
-                .with_cell(t),
-        );
+    let rows: Vec<Vec<Cell>> = observed_type_counters
+        .into_iter()
+        .sorted_by_key(|t| t.1)
+        .map(|(t, count)| {
+            let percentage = 100.0 * (count as f64 / total_count as f64);
+            vec![
+                Cell::new(count),
+                Cell::new(format!("{percentage:.01}")),
+                Cell::new(format!("0x{:03X}", EventId::from(t))),
+                Cell::new(t),
+            ]
+        })
+        .collect();
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec!["Count", "%", "ID", "Type"])
+        .add_rows(rows);
+    for c in table.column_iter_mut() {
+        c.set_cell_alignment(CellAlignment::Right);
     }
-    print!("{table}");
+    table
+        .column_mut(3)
+        .unwrap()
+        .set_cell_alignment(CellAlignment::Left);
+    println!("{table}");
+    println!();
 
-    let mut table = Table::new("{:>}   {:>}   {:<}   {:>}   {:>}   {:>}   {:>}   {:>}");
-    table.add_heading(
-        "----------------------------------------------------------------------------------------------",
-    );
-    table.add_row(
-        Row::new()
-            .with_cell("Handle")
-            .with_cell("Symbol")
-            .with_cell("Type")
-            .with_cell("Count")
-            .with_cell("Ticks")
-            .with_cell("Nanos")
-            .with_cell("Duration")
-            .with_cell("%"),
-    );
-    table.add_heading(
-        "----------------------------------------------------------------------------------------------",
-    );
-    for (ctx, stats) in context_stats
+    let rows: Vec<Vec<Cell>> = context_stats
         .into_iter()
         .sorted_by_key(|t| t.1.total_runtime.get_raw())
-    {
-        let handle = ctx.object_handle();
-        let sym = rd
-            .entry_table
-            .symbol(handle)
-            .map(|s| s.as_ref())
-            .unwrap_or("");
-        let typ = match ctx {
-            ContextHandle::Task(_) => "Task",
-            ContextHandle::Isr(_) => "ISR",
-        };
-        let total_ns = if !rd.timestamp_info.timer_frequency.is_unitless() {
-            let ticks_ns = u128::from(stats.total_runtime.get_raw()) * u128::from(ONE_SECOND);
-            (ticks_ns / u128::from(rd.timestamp_info.timer_frequency.get_raw())) as u64
-        } else {
-            0
-        };
-        let total_dur = Duration::from_nanos(total_ns);
-        let percentage =
-            100.0 * ((stats.total_runtime.get_raw() as f64) / (total_time_ticks.get_raw() as f64));
-        table.add_row(
-            Row::new()
-                .with_cell(handle)
-                .with_cell(sym)
-                .with_cell(typ)
-                .with_cell(stats.count)
-                .with_cell(stats.total_runtime.ticks())
-                .with_cell(total_ns)
-                .with_cell(format!("{total_dur:?}"))
-                .with_cell(format!("{percentage:.02}")),
-        );
+        .map(|(ctx, stats)| {
+            let handle = ctx.object_handle();
+            let sym = rd
+                .entry_table
+                .symbol(handle)
+                .map(|s| s.as_ref())
+                .unwrap_or("");
+            let typ = match ctx {
+                ContextHandle::Task(_) => "Task",
+                ContextHandle::Isr(_) => "ISR",
+            };
+            let total_ns = if !rd.timestamp_info.timer_frequency.is_unitless() {
+                let ticks_ns = u128::from(stats.total_runtime.get_raw()) * u128::from(ONE_SECOND);
+                (ticks_ns / u128::from(rd.timestamp_info.timer_frequency.get_raw())) as u64
+            } else {
+                0
+            };
+            let total_dur = Duration::from_nanos(total_ns);
+            let percentage = 100.0
+                * ((stats.total_runtime.get_raw() as f64) / (total_time_ticks.get_raw() as f64));
+            vec![
+                Cell::new(handle),
+                Cell::new(sym),
+                Cell::new(typ),
+                Cell::new(stats.count),
+                Cell::new(stats.total_runtime.ticks()),
+                Cell::new(total_ns),
+                Cell::new(format!("{total_dur:?}")),
+                Cell::new(format!("{percentage:.02}")),
+            ]
+        })
+        .collect();
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec![
+            "Handle", "Symbol", "Type", "Count", "Ticks", "Nanos", "Duration", "%",
+        ])
+        .add_rows(rows);
+    for c in table.column_iter_mut() {
+        c.set_cell_alignment(CellAlignment::Right);
     }
-    print!("{table}");
+    table
+        .column_mut(1)
+        .unwrap()
+        .set_cell_alignment(CellAlignment::Left);
+    println!("{table}");
+    println!();
 
     println!("----------------------------------------------------------------------------------------------");
     println!("Total events: {total_count}");
