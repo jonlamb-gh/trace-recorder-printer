@@ -113,6 +113,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     let mut total_dropped_events = 0_u64;
     let mut time_tracker = StreamingInstant::zero();
     let mut context_stats: HashMap<ContextHandle, ContextStats> = Default::default();
+    let mut stack_stats: HashMap<ObjectHandle, StackStats> = Default::default();
     let mut active_context = ContextHandle::Task(ObjectHandle::NO_TASK);
     let mut session_timestamps = Vec::new();
 
@@ -215,6 +216,14 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
                 active_context = contex_switch_handle;
             }
         }
+
+        // Update stack stats
+        if let Event::UnusedStack(stack_event) = &event {
+            let stats = stack_stats
+                .entry(stack_event.handle)
+                .or_insert_with(|| StackStats::new(stack_event.low_mark));
+            stats.update(stack_event.low_mark);
+        }
     }
 
     if opts.user_events {
@@ -310,6 +319,10 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
                 ContextHandle::Task(_) => "Task",
                 ContextHandle::Isr(_) => "ISR",
             };
+            let stack_min_max = stack_stats
+                .get(&handle)
+                .map(|s| format!("{}/{}", s.low_mark_min, s.low_mark_max))
+                .unwrap_or("".to_string());
             let total_ns = if !rd.timestamp_info.timer_frequency.is_unitless() {
                 let ticks_ns = u128::from(stats.total_runtime.get_raw()) * u128::from(ONE_SECOND);
                 (ticks_ns / u128::from(rd.timestamp_info.timer_frequency.get_raw())) as u64
@@ -323,6 +336,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
                 Cell::new(handle),
                 Cell::new(sym),
                 Cell::new(typ),
+                Cell::new(stack_min_max),
                 Cell::new(stats.count),
                 Cell::new(stats.total_runtime.ticks()),
                 Cell::new(total_ns),
@@ -337,7 +351,15 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
         .apply_modifier(UTF8_ROUND_CORNERS)
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(vec![
-            "Handle", "Symbol", "Type", "Count", "Ticks", "Nanos", "Duration", "%",
+            "Handle",
+            "Symbol",
+            "Type",
+            "Stack LM Min/Max",
+            "Count",
+            "Ticks",
+            "Nanos",
+            "Duration",
+            "%",
         ])
         .add_rows(rows);
     for c in table.column_iter_mut() {
@@ -387,6 +409,26 @@ fn reset_signal_pipe_handler() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 type DurationTicks = Timestamp;
+
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+struct StackStats {
+    low_mark_min: u32,
+    low_mark_max: u32,
+}
+
+impl StackStats {
+    pub fn new(low_mark: u32) -> Self {
+        Self {
+            low_mark_min: low_mark,
+            low_mark_max: low_mark,
+        }
+    }
+
+    pub fn update(&mut self, low_mark: u32) {
+        self.low_mark_min = self.low_mark_min.min(low_mark);
+        self.low_mark_max = self.low_mark_max.max(low_mark);
+    }
+}
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 struct ContextStats {
