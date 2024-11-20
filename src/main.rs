@@ -112,6 +112,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     let mut time_tracker = StreamingInstant::zero();
     let mut context_stats: HashMap<ContextHandle, ContextStats> = Default::default();
     let mut active_context = ContextHandle::Task(ObjectHandle::NO_TASK);
+    let mut session_timestamps = Vec::new();
 
     loop {
         let (event_code, event) = match rd.read_event(&mut r) {
@@ -122,12 +123,12 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
                     warn!("Detected a restarted trace stream");
                     trace_reset_count += 1;
                     first_event_observed = false;
+                    active_context = ContextHandle::Task(ObjectHandle::NO_TASK);
+                    session_timestamps.push(time_tracker.to_timestamp());
                     rd = RecorderData::read_with_endianness(psf_start_word_endianness, &mut r)?;
                     if let Some(custom_printf_event_id) = opts.custom_printf_event_id {
                         rd.set_custom_printf_event_id(custom_printf_event_id.into());
                     }
-                    // TODO - probably can do better and maintain these stats
-                    context_stats.clear();
                     continue;
                 }
                 _ => {
@@ -217,6 +218,9 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     if opts.user_events {
         return Ok(());
     }
+
+    session_timestamps.push(time_tracker.to_timestamp());
+    let total_time_ticks: Timestamp = session_timestamps.into_iter().sum();
 
     let mut table = Table::new("{:>}    {:>}    {:>}    {:<}");
     table.add_heading("--------------------------------------------------------");
@@ -311,9 +315,8 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
             0
         };
         let total_dur = Duration::from_nanos(total_ns);
-        let percentage = 100.0
-            * ((stats.total_runtime.get_raw() as f64)
-                / (time_tracker.to_timestamp().get_raw() as f64));
+        let percentage =
+            100.0 * ((stats.total_runtime.get_raw() as f64) / (total_time_ticks.get_raw() as f64));
         table.add_row(
             Row::new()
                 .with_cell(handle)
@@ -323,12 +326,11 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_cell(stats.total_runtime.ticks())
                 .with_cell(total_ns)
                 .with_cell(format!("{total_dur:?}"))
-                .with_cell(format!("{percentage:.01}")),
+                .with_cell(format!("{percentage:.02}")),
         );
     }
     print!("{table}");
 
-    let total_time_ticks = time_tracker.to_timestamp();
     println!("----------------------------------------------------------------------------------------------");
     println!("Total events: {total_count}");
     println!("Dropped events: {total_dropped_events}");
