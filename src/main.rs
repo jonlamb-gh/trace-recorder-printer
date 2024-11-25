@@ -3,6 +3,7 @@ use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::*;
 use itertools::Itertools;
+use statrs::statistics::Statistics;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::{fs::File, io::BufReader, path::PathBuf, time::Duration};
 use trace_recorder_parser::{
@@ -154,15 +155,8 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let timestamp = time_tracker.elapsed(event.timestamp());
-        let timestamp_dur =
-            if !opts.raw_timestamps && !rd.timestamp_info.timer_frequency.is_unitless() {
-                let ticks_ns = u128::from(timestamp.get_raw()) * u128::from(ONE_SECOND);
-                let total_time_ns =
-                    (ticks_ns / u128::from(rd.timestamp_info.timer_frequency.get_raw())) as u64;
-                Some(Duration::from_nanos(total_time_ns))
-            } else {
-                None
-            };
+
+        let timestamp_dur = rd.convert_timestamp(timestamp).map(Duration::from_nanos);
 
         let event_type = event_code.event_type();
         if !opts.no_events && !opts.user_events {
@@ -306,7 +300,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     let rows: Vec<Vec<Cell>> = context_stats
-        .into_iter()
+        .iter()
         .sorted_by_key(|t| t.1.total_runtime.get_raw())
         .map(|(ctx, stats)| {
             let handle = ctx.object_handle();
@@ -321,7 +315,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let prio: String = stats
                 .priorities
-                .into_iter()
+                .iter()
                 .sorted()
                 .map(|p| p.to_string())
                 .collect::<Vec<String>>()
@@ -330,12 +324,8 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
                 .get(&handle)
                 .map(|s| format!("{}/{}", s.low_mark_min, s.low_mark_max))
                 .unwrap_or("".to_string());
-            let total_ns = if !rd.timestamp_info.timer_frequency.is_unitless() {
-                let ticks_ns = u128::from(stats.total_runtime.get_raw()) * u128::from(ONE_SECOND);
-                (ticks_ns / u128::from(rd.timestamp_info.timer_frequency.get_raw())) as u64
-            } else {
-                0
-            };
+
+            let total_ns = rd.convert_timestamp(stats.total_runtime).unwrap_or(0);
             let total_dur = Duration::from_nanos(total_ns);
             let percentage = 100.0
                 * ((stats.total_runtime.get_raw() as f64) / (total_time_ticks.get_raw() as f64));
@@ -381,14 +371,84 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{table}");
     println!();
 
+    let rows: Vec<Vec<Cell>> = context_stats
+        .iter()
+        .sorted_by_key(|t| t.1.total_runtime.get_raw())
+        .map(|(ctx, stats)| {
+            let handle = ctx.object_handle();
+            let sym = rd
+                .entry_table
+                .symbol(handle)
+                .map(|s| s.as_ref())
+                .unwrap_or("");
+            let typ = match ctx {
+                ContextHandle::Task(_) => "Task",
+                ContextHandle::Isr(_) => "ISR",
+            };
+            let min_ticks = Statistics::min(&stats.running_instances);
+            let min_dur = Duration::from_nanos(
+                rd.convert_timestamp(
+                    StreamingInstant::from_initial_value(min_ticks as u64).to_timestamp(),
+                )
+                .unwrap_or(0),
+            );
+            let max_ticks = Statistics::max(&stats.running_instances);
+            let max_dur = Duration::from_nanos(
+                rd.convert_timestamp(
+                    StreamingInstant::from_initial_value(max_ticks as u64).to_timestamp(),
+                )
+                .unwrap_or(0),
+            );
+            let mean_ticks = Statistics::mean(&stats.running_instances);
+            let mean_dur = Duration::from_nanos(
+                rd.convert_timestamp(
+                    StreamingInstant::from_initial_value(mean_ticks as u64).to_timestamp(),
+                )
+                .unwrap_or(0),
+            );
+            let stddev_ticks = Statistics::std_dev(&stats.running_instances);
+            let stddev_dur = Duration::from_nanos(
+                rd.convert_timestamp(
+                    StreamingInstant::from_initial_value(stddev_ticks as u64).to_timestamp(),
+                )
+                .unwrap_or(0),
+            );
+            vec![
+                Cell::new(handle),
+                Cell::new(sym),
+                Cell::new(typ),
+                Cell::new(format!("{min_dur:?}")),
+                Cell::new(format!("{max_dur:?}")),
+                Cell::new(format!("{mean_dur:?}")),
+                Cell::new(format!("{stddev_dur:?}")),
+            ]
+        })
+        .collect();
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec![
+            "Handle", "Symbol", "Type", "Min", "Max", "Mean", "Std Dev",
+        ])
+        .add_rows(rows);
+    for c in table.column_iter_mut() {
+        c.set_cell_alignment(CellAlignment::Right);
+    }
+    table
+        .column_mut(1)
+        .unwrap()
+        .set_cell_alignment(CellAlignment::Left);
+    println!("{table}");
+    println!();
+
     println!("Total events: {total_count}");
     println!("Dropped events: {total_dropped_events}");
     println!("Trace restarts: {trace_restart_count}");
     println!("Total time (ticks): {}", total_time_ticks);
-    if !rd.timestamp_info.timer_frequency.is_unitless() {
-        let ticks_ns = u128::from(total_time_ticks.get_raw()) * u128::from(ONE_SECOND);
-        let total_time_ns =
-            (ticks_ns / u128::from(rd.timestamp_info.timer_frequency.get_raw())) as u64;
+
+    if let Some(total_time_ns) = rd.convert_timestamp(total_time_ticks) {
         let total_dur = Duration::from_nanos(total_time_ns);
         println!("Total time (ns): {}", total_time_ns);
         println!("Total time: {:?}", total_dur);
@@ -399,6 +459,22 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
 
 // ns
 const ONE_SECOND: u64 = 1_000_000_000;
+
+trait TrcTimeExt {
+    // Return nanoseconds
+    fn convert_timestamp(&self, t: Timestamp) -> Option<u64>;
+}
+
+impl TrcTimeExt for RecorderData {
+    fn convert_timestamp(&self, t: Timestamp) -> Option<u64> {
+        if self.timestamp_info.timer_frequency.is_unitless() {
+            None
+        } else {
+            let ticks_ns = u128::from(t.get_raw()) * u128::from(ONE_SECOND);
+            Some((ticks_ns / u128::from(self.timestamp_info.timer_frequency.get_raw())) as u64)
+        }
+    }
+}
 
 // Used to prevent panics on broken pipes.
 // See:
@@ -440,26 +516,30 @@ impl StackStats {
 
 #[derive(Clone, Debug)]
 struct ContextStats {
+    /// Priorities observed
+    priorities: HashSet<Priority>,
+
     /// When the context was last switched in
     last_timestamp: Timestamp,
 
     /// Total time the context has been in the running state
     total_runtime: DurationTicks,
 
+    /// Duration (in ticks) of each instance the context was in the running state
+    running_instances: Vec<f64>,
+
     /// Number of times the context was switched in
     count: u64,
-
-    /// Priorities observed
-    priorities: HashSet<Priority>,
 }
 
 impl ContextStats {
     fn new(last_timestamp: Timestamp) -> Self {
         Self {
+            priorities: Default::default(),
             last_timestamp,
             total_runtime: DurationTicks::zero(),
+            running_instances: Default::default(),
             count: 0,
-            priorities: Default::default(),
         }
     }
 
@@ -478,6 +558,7 @@ impl ContextStats {
             let diff = timestamp - self.last_timestamp;
             self.total_runtime += diff;
             self.last_timestamp = timestamp;
+            self.running_instances.push(diff.get_raw() as f64);
         }
     }
 }
