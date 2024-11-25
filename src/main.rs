@@ -3,7 +3,7 @@ use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::*;
 use itertools::Itertools;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::{fs::File, io::BufReader, path::PathBuf, time::Duration};
 use trace_recorder_parser::{
     streaming::{
@@ -11,7 +11,7 @@ use trace_recorder_parser::{
         Error, RecorderData,
     },
     time::{StreamingInstant, Timestamp},
-    types::ObjectHandle,
+    types::{ObjectHandle, Priority},
 };
 use tracing::{error, warn};
 
@@ -192,26 +192,26 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Update active context and stats
-        let maybe_contex_switch_handle: Option<ContextHandle> = match &event {
-            Event::IsrBegin(ev) | Event::IsrResume(ev) => Some(ev.into()),
+        let maybe_contex: Option<(ContextHandle, Priority)> = match &event {
+            Event::IsrBegin(ev) | Event::IsrResume(ev) => Some((ev.into(), ev.priority)),
             Event::TaskBegin(ev) | Event::TaskResume(ev) | Event::TaskActivate(ev) => {
-                Some(ev.into())
+                Some((ev.into(), ev.priority))
             }
             _ => None,
         };
 
-        if let Some(contex_switch_handle) = maybe_contex_switch_handle {
+        if let Some((contex_switch_handle, prio)) = maybe_contex {
             if contex_switch_handle != active_context {
                 // Update runtime stats for the previous context being switched out
                 if let Some(prev_ctx_stats) = context_stats.get_mut(&active_context) {
-                    prev_ctx_stats.update(timestamp);
+                    prev_ctx_stats.switch_out(timestamp);
                 }
 
                 // Same for the new context being switched in
                 let ctx_stats = context_stats
                     .entry(contex_switch_handle)
                     .or_insert_with(|| ContextStats::new(timestamp));
-                ctx_stats.set_last_timestamp(timestamp);
+                ctx_stats.switch_in(timestamp, prio);
 
                 active_context = contex_switch_handle;
             }
@@ -319,6 +319,13 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
                 ContextHandle::Task(_) => "Task",
                 ContextHandle::Isr(_) => "ISR",
             };
+            let prio: String = stats
+                .priorities
+                .into_iter()
+                .sorted()
+                .map(|p| p.to_string())
+                .collect::<Vec<String>>()
+                .join(",");
             let stack_min_max = stack_stats
                 .get(&handle)
                 .map(|s| format!("{}/{}", s.low_mark_min, s.low_mark_max))
@@ -336,6 +343,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
                 Cell::new(handle),
                 Cell::new(sym),
                 Cell::new(typ),
+                Cell::new(prio),
                 Cell::new(stack_min_max),
                 Cell::new(stats.count),
                 Cell::new(stats.total_runtime.ticks()),
@@ -354,6 +362,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
             "Handle",
             "Symbol",
             "Type",
+            "Prio",
             "Stack LM Min/Max",
             "Count",
             "Ticks",
@@ -429,7 +438,7 @@ impl StackStats {
     }
 }
 
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[derive(Clone, Debug)]
 struct ContextStats {
     /// When the context was last switched in
     last_timestamp: Timestamp,
@@ -439,6 +448,9 @@ struct ContextStats {
 
     /// Number of times the context was switched in
     count: u64,
+
+    /// Priorities observed
+    priorities: HashSet<Priority>,
 }
 
 impl ContextStats {
@@ -447,17 +459,19 @@ impl ContextStats {
             last_timestamp,
             total_runtime: DurationTicks::zero(),
             count: 0,
+            priorities: Default::default(),
         }
     }
 
     /// Called when this context is switched in
-    fn set_last_timestamp(&mut self, last_timestamp: Timestamp) {
+    fn switch_in(&mut self, last_timestamp: Timestamp, prio: Priority) {
         self.last_timestamp = last_timestamp;
         self.count += 1;
+        self.priorities.insert(prio);
     }
 
     /// Called when this context is switched out
-    fn update(&mut self, timestamp: Timestamp) {
+    fn switch_out(&mut self, timestamp: Timestamp) {
         if timestamp < self.last_timestamp {
             warn!("Stats timestamp went backwards");
         } else {
