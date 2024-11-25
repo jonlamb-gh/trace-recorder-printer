@@ -107,7 +107,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut observed_type_counters = BTreeMap::new();
     let mut total_count = 0_u64;
-    let mut trace_reset_count = 0_u64;
+    let mut trace_restart_count = 0_u64;
     let mut event_counter_tracker = TrackingEventCounter::zero();
     let mut first_event_observed = false;
     let mut total_dropped_events = 0_u64;
@@ -124,7 +124,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => match e {
                 Error::TraceRestarted(psf_start_word_endianness) => {
                     warn!("Detected a restarted trace stream");
-                    trace_reset_count += 1;
+                    trace_restart_count += 1;
                     first_event_observed = false;
                     active_context = ContextHandle::Task(ObjectHandle::NO_TASK);
                     session_timestamps.push(time_tracker.to_timestamp());
@@ -372,10 +372,9 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{table}");
     println!();
 
-    println!("----------------------------------------------------------------------------------------------");
     println!("Total events: {total_count}");
     println!("Dropped events: {total_dropped_events}");
-    println!("Trace resets: {trace_reset_count}");
+    println!("Trace restarts: {trace_restart_count}");
     println!("Total time (ticks): {}", total_time_ticks);
     if !rd.timestamp_info.timer_frequency.is_unitless() {
         let ticks_ns = u128::from(total_time_ticks.get_raw()) * u128::from(ONE_SECOND);
