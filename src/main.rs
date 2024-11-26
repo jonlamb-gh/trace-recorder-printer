@@ -107,6 +107,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut observed_type_counters = BTreeMap::new();
+    let mut user_event_channel_counters = BTreeMap::new();
     let mut total_count = 0_u64;
     let mut trace_restart_count = 0_u64;
     let mut event_counter_tracker = TrackingEventCounter::zero();
@@ -172,6 +173,12 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 println!("{user_event}");
             }
+        }
+
+        if let Event::User(user_event) = &event {
+            *user_event_channel_counters
+                .entry(user_event.channel.to_string())
+                .or_insert(0) += 1_u64;
         }
 
         *observed_type_counters.entry(event_type).or_insert(0) += 1_u64;
@@ -294,6 +301,37 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     }
     table
         .column_mut(3)
+        .unwrap()
+        .set_cell_alignment(CellAlignment::Left);
+    println!("{table}");
+    println!();
+
+    // TODO user event channel counts
+    let total_user_events: u64 = user_event_channel_counters.values().sum();
+    let rows: Vec<Vec<Cell>> = user_event_channel_counters
+        .into_iter()
+        .sorted_by_key(|t| t.1)
+        .map(|(channel, count)| {
+            let percentage = 100.0 * (count as f64 / total_user_events as f64);
+            vec![
+                Cell::new(count),
+                Cell::new(format!("{percentage:.01}")),
+                Cell::new(channel),
+            ]
+        })
+        .collect();
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec!["Count", "%", "USER_EVENT Channel"])
+        .add_rows(rows);
+    for c in table.column_iter_mut() {
+        c.set_cell_alignment(CellAlignment::Right);
+    }
+    table
+        .column_mut(2)
         .unwrap()
         .set_cell_alignment(CellAlignment::Left);
     println!("{table}");
