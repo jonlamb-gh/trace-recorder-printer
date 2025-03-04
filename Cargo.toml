@@ -1,6 +1,6 @@
 [package]
 name = "trace-recorder-printer"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 authors = ["Jon Lamb"]
 description = "Print Percepio TraceRecorder streaming data from file"
