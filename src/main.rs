@@ -161,14 +161,18 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
 
         let event_type = event_code.event_type();
         if !opts.no_events && !opts.user_events {
-            if let Some(dur) = timestamp_dur {
+            if opts.raw_timestamps {
+                print!("[{:08}]", timestamp);
+            } else if let Some(dur) = timestamp_dur {
                 print!("[{}.{:03}] ", dur.as_secs(), dur.subsec_millis());
             }
             println!("{event_type} : {event} : {}", event.event_count());
         }
         if opts.user_events {
             if let Event::User(user_event) = &event {
-                if let Some(dur) = timestamp_dur {
+                if opts.raw_timestamps {
+                    print!("[{:08}]", timestamp);
+                } else if let Some(dur) = timestamp_dur {
                     print!("[{}.{:03}] ", dur.as_secs(), dur.subsec_millis());
                 }
                 println!("{user_event}");
